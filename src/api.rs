@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Json, Response},
     routing::{get, post},
@@ -49,8 +49,10 @@ pub async fn start_server(config: ConnectionConfig, listen_port: u16) -> Result<
         .route("/api/table/:schema/:name/schema", get(api_table_schema))
         .route("/api/table/:schema/:name/export/:format", get(api_table_export))
         .route("/api/query", post(api_query))
+        .route("/api/script", post(api_script))
         .fallback(serve_assets)
         .layer(CorsLayer::permissive())
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", listen_port);
@@ -184,19 +186,57 @@ async fn api_query(
     }
     let app = state.app.lock().await;
     match app.execute_sql(&body.sql).await {
-        Ok((columns, rows)) => {
-            let cell_rows: Vec<Vec<&str>> = rows
+        Ok(results) => {
+            let json_results: Vec<serde_json::Value> = results
                 .iter()
-                .map(|row| row.iter().map(|c| c.display_text()).collect())
+                .map(|qr| {
+                    let cell_rows: Vec<Vec<&str>> = qr
+                        .rows
+                        .iter()
+                        .map(|row| row.iter().map(|c| c.display_text()).collect())
+                        .collect();
+                    serde_json::json!({
+                        "columns": qr.columns,
+                        "rows": cell_rows,
+                        "rows_affected": qr.rows_affected,
+                    })
+                })
                 .collect();
-            Json(serde_json::json!({
-                "columns": columns,
-                "rows": cell_rows,
-            }))
-            .into_response()
+            Json(serde_json::json!({"results": json_results})).into_response()
         }
         Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }
+}
+
+async fn api_script(
+    State(state): State<AppState>,
+    Json(body): Json<QueryRequest>,
+) -> Json<serde_json::Value> {
+    if let Err(e) = ensure_connected(&state).await {
+        return Json(serde_json::json!({"error": e}));
+    }
+    let app = state.app.lock().await;
+    let results: Vec<serde_json::Value> = app
+        .execute_multi(&body.sql)
+        .await
+        .into_iter()
+        .map(|r| match r {
+            Ok(qr) => {
+                let cell_rows: Vec<Vec<&str>> = qr
+                    .rows
+                    .iter()
+                    .map(|row| row.iter().map(|c| c.display_text()).collect())
+                    .collect();
+                serde_json::json!({
+                    "columns": qr.columns,
+                    "rows": cell_rows,
+                    "rows_affected": qr.rows_affected,
+                })
+            }
+            Err(e) => serde_json::json!({"error": e.to_string()}),
+        })
+        .collect();
+    Json(serde_json::json!({"results": results}))
 }
 
 #[derive(Deserialize)]

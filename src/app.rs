@@ -55,6 +55,13 @@ pub struct ConnectionConfig {
     pub encrypt: bool,
 }
 
+#[derive(Debug, Serialize)]
+pub struct QueryResult {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<CellType>>,
+    pub rows_affected: usize,
+}
+
 impl App {
     pub async fn connect(&mut self, config: ConnectionConfig) -> Result<(), Box<dyn std::error::Error>> {
         let mut client = self.build_client(&config).await?;
@@ -190,38 +197,204 @@ impl App {
     pub async fn execute_sql(
         &self,
         sql: &str,
-    ) -> Result<(Vec<String>, Vec<Vec<CellType>>), Box<dyn std::error::Error>> {
+    ) -> Result<Vec<QueryResult>, Box<dyn std::error::Error>> {
         let sql_trimmed = sql.trim();
         if sql_trimmed.is_empty() {
-            return Ok((Vec::new(), Vec::new()));
+            return Ok(Vec::new());
+        }
+        let stmts = split_sql(sql_trimmed);
+        if stmts.is_empty() {
+            return Ok(Vec::new());
         }
         let mut client = self.get_client().await?;
-        let mut stream = client.query(sql_trimmed, &[]).await?;
-
-        let cols: Vec<String> = stream
-            .columns()
-            .await
-            .map(|opt| {
-                opt.map(|cs| cs.iter().map(|c| c.name().to_string()).collect())
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default();
-
-        let mut data: Vec<Vec<CellType>> = Vec::new();
-        while let Some(item) = stream.try_next().await? {
-            match item {
-                QueryItem::Row(row) => {
-                    let mut cells = Vec::new();
-                    for i in 0..cols.len() {
-                        cells.push(map_cell(&row, i));
-                    }
-                    data.push(cells);
-                }
-                QueryItem::Metadata(_) => {}
-            }
+        let mut results = Vec::new();
+        for (_raw, trimmed) in &stmts {
+            let result = exec_statement(&mut client, trimmed).await?;
+            results.push(result);
         }
-        Ok((cols, data))
+        Ok(results)
     }
+
+    pub async fn execute_multi(
+        &self,
+        sql: &str,
+    ) -> Vec<Result<QueryResult, Box<dyn std::error::Error>>> {
+        let sql_trimmed = sql.trim();
+        if sql_trimmed.is_empty() {
+            return Vec::new();
+        }
+        let stmts = split_sql(sql_trimmed);
+        if stmts.is_empty() {
+            return Vec::new();
+        }
+        let mut client = match self.get_client().await {
+            Ok(c) => c,
+            Err(e) => return vec![Err(e)],
+        };
+        let mut results = Vec::new();
+        for (_raw, trimmed) in &stmts {
+            let result = exec_statement(&mut client, trimmed).await;
+            results.push(result);
+        }
+        results
+    }
+}
+
+pub fn split_sql(sql: &str) -> Vec<(String, String)> {
+    let mut statements = Vec::new();
+    let mut current = String::new();
+    let chars: Vec<char> = sql.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        if chars[i] == 'N' && i + 1 < chars.len() && chars[i + 1] == '\'' {
+            current.push_str("N'");
+            i += 2;
+            while i < chars.len() {
+                current.push(chars[i]);
+                if chars[i] == '\'' {
+                    if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                        i += 1;
+                        current.push(chars[i]);
+                    } else {
+                        break;
+                    }
+                }
+                i += 1;
+            }
+        } else if chars[i] == '\'' {
+            current.push(chars[i]);
+            i += 1;
+            while i < chars.len() {
+                current.push(chars[i]);
+                if chars[i] == '\'' {
+                    if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                        i += 1;
+                        current.push(chars[i]);
+                    } else {
+                        break;
+                    }
+                }
+                i += 1;
+            }
+        } else if chars[i] == '-' && i + 1 < chars.len() && chars[i + 1] == '-' {
+            current.push_str("--");
+            i += 2;
+            while i < chars.len() && chars[i] != '\n' {
+                current.push(chars[i]);
+                i += 1;
+            }
+        } else if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+            current.push_str("/*");
+            i += 2;
+            while i + 1 < chars.len() {
+                current.push(chars[i]);
+                if chars[i] == '*' && chars[i + 1] == '/' {
+                    current.push('/');
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+        } else if chars[i] == '[' {
+            current.push('[');
+            i += 1;
+            while i < chars.len() && chars[i] != ']' {
+                current.push(chars[i]);
+                i += 1;
+            }
+            if i < chars.len() {
+                current.push(']');
+            }
+        } else if chars[i] == '"' {
+            current.push(chars[i]);
+            i += 1;
+            while i < chars.len() {
+                current.push(chars[i]);
+                if chars[i] == '"' {
+                    if i + 1 < chars.len() && chars[i + 1] == '"' {
+                        i += 1;
+                        current.push(chars[i]);
+                    } else {
+                        break;
+                    }
+                }
+                i += 1;
+            }
+        } else if chars[i] == ';' {
+            current.push(';');
+            let trimmed = current.trim().to_string();
+            if !trimmed.is_empty() && trimmed != ";" {
+                statements.push((current.clone(), trimmed));
+            }
+            current.clear();
+        } else if chars[i] == 'G' || chars[i] == 'g' {
+            let is_go =
+                (i == 0 || chars[i - 1] == '\n' || chars[i - 1] == ';') &&
+                (i + 1 < chars.len() && (chars[i + 1] == 'o' || chars[i + 1] == 'O')) &&
+                (i + 2 >= chars.len() || chars[i + 2] == '\n' || chars[i + 2] == ';' || chars[i + 2] == '\r');
+            if is_go {
+                let trimmed = current.trim().to_string();
+                if !trimmed.is_empty() {
+                    statements.push((current.clone(), trimmed));
+                }
+                current.clear();
+                while i < chars.len() && chars[i] != '\n' && chars[i] != ';' {
+                    i += 1;
+                }
+                if i < chars.len() && chars[i] == '\n' { current.push('\n'); }
+                continue;
+            } else {
+                current.push(chars[i]);
+            }
+        } else {
+            current.push(chars[i]);
+        }
+        i += 1;
+    }
+
+    let trimmed = current.trim().to_string();
+    if !trimmed.is_empty() {
+        statements.push((current, trimmed));
+    }
+    statements
+}
+
+pub async fn exec_statement(
+    client: &mut Client<tokio_util::compat::Compat<tokio::net::TcpStream>>,
+    sql: &str,
+) -> Result<QueryResult, Box<dyn std::error::Error>> {
+    let sql = sql.trim();
+    if sql.is_empty() {
+        return Ok(QueryResult { columns: vec![], rows: vec![], rows_affected: 0 });
+    }
+
+    let mut stream = client.query(sql, &[]).await?;
+
+    let cols: Vec<String> = stream
+        .columns()
+        .await
+        .map(|opt| {
+            opt.map(|cs| cs.iter().map(|c| c.name().to_string()).collect())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+
+    let mut data: Vec<Vec<CellType>> = Vec::new();
+    while let Some(item) = stream.try_next().await? {
+        match item {
+            QueryItem::Row(row) => {
+                let mut cells = Vec::new();
+                for i in 0..cols.len() {
+                    cells.push(map_cell(&row, i));
+                }
+                data.push(cells);
+            }
+            QueryItem::Metadata(_) => {}
+        }
+    }
+    let rows_affected = data.len();
+    Ok(QueryResult { columns: cols, rows: data, rows_affected })
 }
 
 fn map_cell(row: &Row, col_index: usize) -> CellType {

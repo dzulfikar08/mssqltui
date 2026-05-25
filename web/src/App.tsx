@@ -92,7 +92,8 @@ export default function App() {
   const [selectedName, setSelectedName] = useState('')
   const [data, setData] = useState<DataResponse | null>(null)
   const [sqlInput, setSqlInput] = useState('')
-  const [sqlResult, setSqlResult] = useState<{ columns: string[]; rows: string[][] } | null>(null)
+  const [sqlResults, setSqlResults] = useState<{ columns: string[]; rows: string[][] }[] | null>(null)
+  const [selectedResultIdx, setSelectedResultIdx] = useState(0)
   const [sqlError, setSqlError] = useState('')
   const [loading, setLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -132,8 +133,8 @@ export default function App() {
   }, [selectedSchema, selectedName])
 
   const runQuery = useCallback(async () => {
-    if (!sqlInput.trim()) return; setLoading(true); setSqlError(''); setSqlResult(null)
-    try { const res = await fetch('/api/query', { method: 'POST', headers: headers(), body: JSON.stringify({ sql: sqlInput }) }); const json = await res.json(); if (json.error) setSqlError(json.error); else setSqlResult(json) } catch (e: any) { setSqlError(e.message) }
+    if (!sqlInput.trim()) return; setLoading(true); setSqlError(''); setSqlResults(null)
+    try { const res = await fetch('/api/query', { method: 'POST', headers: headers(), body: JSON.stringify({ sql: sqlInput }) }); const json = await res.json(); if (json.error) setSqlError(json.error); else if (json.results) { setSqlResults(json.results); setSelectedResultIdx(0) } } catch (e: any) { setSqlError(e.message) }
     setLoading(false)
   }, [sqlInput])
 
@@ -176,7 +177,16 @@ export default function App() {
           <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
             {tab === 'browse' && <BrowseTab data={data} loading={loading} page={page} pageSize={pageSize} onPage={loadPage} selectedTable={selectedTable} showToast={showToast} />}
             {tab === 'schema' && <SchemaTab table={selectedTable} />}
-            {tab === 'query' && <QueryTab sql={sqlInput} setSql={setSqlInput} result={sqlResult} error={sqlError} loading={loading} onRun={runQuery} queryRef={queryRef} tableNames={allTableNames} viewNames={allViewNames} columns={allColumns} showToast={showToast} />}
+            {tab === 'query' && (
+              <QueryTab
+                sql={sqlInput} setSql={setSqlInput}
+                results={sqlResults} selectedResultIdx={selectedResultIdx} setSelectedResultIdx={setSelectedResultIdx}
+                error={sqlError}
+                loading={loading} onRun={runQuery} queryRef={queryRef}
+                tableNames={allTableNames} viewNames={allViewNames} columns={allColumns}
+                showToast={showToast}
+              />
+            )}
             {tab === 'export' && <ExportTab schema={selectedSchema} name={selectedName} table={selectedTable} />}
           </div>
         </> : <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--muted)' }}>Select a table from the sidebar</div>}
@@ -217,39 +227,268 @@ function SchemaTab({ table }: { table: TableInfo }) {
   </div>
 }
 
-function QueryTab({ sql, setSql, result, error, loading, onRun, queryRef, tableNames, viewNames, columns }: {
-  sql: string; setSql: (s: string) => void; result: { columns: string[]; rows: string[][] } | null
-  error: string; loading: boolean; onRun: () => void; queryRef: React.RefObject<HTMLTextAreaElement | null>
-  tableNames: string[]; viewNames: string[]; columns: [string, string[]][]
+function QueryTab({ sql, setSql, results, selectedResultIdx, setSelectedResultIdx, error, loading, onRun, queryRef, tableNames, viewNames, columns, showToast }: {
+  sql: string
+  setSql: (s: string) => void
+  results: { columns: string[]; rows: string[][] }[] | null
+  selectedResultIdx: number
+  setSelectedResultIdx: (n: number) => void
+  error: string
+  loading: boolean
+  onRun: () => void
+  queryRef: React.RefObject<HTMLTextAreaElement | null>
+  tableNames: string[]
+  viewNames: string[]
+  columns: [string, string[]][]
   showToast: (msg: string) => void
 }) {
   const [suggestions, setSuggestions] = useState<string[]>([])
   const [sugIdx, setSugIdx] = useState(-1)
+  const sugRef = useRef<HTMLDivElement>(null)
+  const highlightRef = useRef<HTMLDivElement>(null)
 
-  const updateSuggestions = useCallback((val: string) => { const sugs = getSuggestions(val, tableNames, viewNames, columns); setSuggestions(sugs); setSugIdx(sugs.length > 0 ? 0 : -1) }, [tableNames, viewNames, columns])
+  useEffect(() => {
+    if (queryRef.current) {
+      queryRef.current.style.height = 'auto'
+      queryRef.current.style.height = queryRef.current.scrollHeight + 'px'
+    }
+  }, [sql, queryRef])
+
+  const syncScroll = () => {
+    if (highlightRef.current && queryRef.current) {
+      highlightRef.current.scrollTop = queryRef.current.scrollTop
+      highlightRef.current.scrollLeft = queryRef.current.scrollLeft
+    }
+  }
+
+  const updateSuggestions = useCallback((val: string) => {
+    const sugs = getSuggestions(val, tableNames, viewNames, columns)
+    setSuggestions(sugs)
+    setSugIdx(sugs.length > 0 ? 0 : -1)
+  }, [tableNames, viewNames, columns])
 
   const applySuggestion = useCallback((sug?: string) => {
-    if (suggestions.length === 0) return; const idx = sugIdx >= 0 ? sugIdx : 0; const chosen = sug ?? suggestions[idx]; if (!chosen) return
-    const parts = sql.split(/([^\w.])/); const last = parts[parts.length - 1] || ''
-    setSql(sql.slice(0, sql.length - last.length) + chosen); setSuggestions([]); setSugIdx(-1)
+    if (suggestions.length === 0) return
+    const idx = sugIdx >= 0 ? sugIdx : 0
+    const chosen = sug ?? suggestions[idx]
+    if (!chosen) return
+    const parts = sql.split(/([^\w.])/)
+    const last = parts[parts.length - 1] || ''
+    const newSql = sql.slice(0, sql.length - last.length) + chosen
+    setSql(newSql)
+    setSuggestions([])
+    setSugIdx(-1)
   }, [sql, suggestions, sugIdx, setSql])
 
   const handleKey = (e: React.KeyboardEvent) => {
-    if (e.key === 's' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); setSuggestions([]); onRun(); return }
-    if (suggestions.length > 0) { if (e.key === 'ArrowDown') { e.preventDefault(); setSugIdx(i => Math.min(i + 1, suggestions.length - 1)); return } if (e.key === 'ArrowUp') { e.preventDefault(); setSugIdx(i => Math.max(i - 1, 0)); return } if (e.key === 'Tab' || e.key === 'Enter') { e.preventDefault(); applySuggestion(); return } if (e.key === 'Escape') { setSuggestions([]); return } }
+    if (e.key === 's' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault()
+      setSuggestions([])
+      onRun()
+      return
+    }
+    if (suggestions.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSugIdx(i => Math.min(i + 1, suggestions.length - 1))
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSugIdx(i => Math.max(i - 1, 0))
+        return
+      }
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault()
+        applySuggestion()
+        return
+      }
+      if (e.key === 'Escape') {
+        setSuggestions([])
+        return
+      }
+    }
   }
 
-  return <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
-    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-      <div style={{ flex: 1, position: 'relative' }}>
-        <textarea ref={queryRef} value={sql} onChange={e => { setSql(e.target.value); updateSuggestions(e.target.value) }} onKeyDown={handleKey} onBlur={() => { setTimeout(() => setSuggestions([]), 150) }} placeholder="SELECT * FROM ..." spellCheck={false} autoCapitalize="off" autoCorrect="off" style={{ width: '100%', minHeight: 80, resize: 'vertical', fontFamily: "'JetBrains Mono', monospace", fontSize: 12, lineHeight: 1.5, padding: 10, background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6 }} />
-        {suggestions.length > 0 && <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 50, background: '#18181b', border: '1px solid var(--border)', borderRadius: 6, maxHeight: 180, overflowY: 'auto', minWidth: 200, boxShadow: '0 4px 12px rgba(0,0,0,.4)' }}>{suggestions.map((s, i) => <div key={s} onMouseDown={e => { e.preventDefault(); applySuggestion(s) }} style={{ padding: '4px 10px', fontSize: 12, fontFamily: "'JetBrains Mono', monospace", color: i === sugIdx ? 'var(--cyan)' : 'var(--text-dim)', background: i === sugIdx ? 'var(--hover-overlay)' : 'transparent', cursor: 'pointer' }}>{s}</div>)}</div>}
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value
+    setSql(val)
+    updateSuggestions(val)
+  }
+
+  const result = results?.[selectedResultIdx] ?? null
+
+  return (
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+        <div style={{ flex: 1, position: 'relative' }}>
+          <div
+            ref={highlightRef}
+            aria-hidden="true"
+            style={{
+              position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+              padding: 10,
+              fontFamily: "'JetBrains Mono', monospace", fontSize: 12, lineHeight: 1.5,
+              whiteSpace: 'pre-wrap', wordWrap: 'break-word',
+              overflow: 'hidden', pointerEvents: 'none',
+              color: 'transparent',
+              border: '1px solid transparent', borderRadius: 6,
+              minHeight: 80,
+            }}
+          >
+            {sql ? highlightSQL(sql) : <span style={{ color: '#52525b' }}>SELECT * FROM ...</span>}
+          </div>
+          <textarea
+            ref={queryRef}
+            value={sql}
+            onChange={handleChange}
+            onKeyDown={handleKey}
+            onScroll={syncScroll}
+            onBlur={() => { setTimeout(() => setSuggestions([]), 150) }}
+            placeholder=""
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            style={{
+              width: '100%', minHeight: 80, resize: 'vertical', overflow: 'auto',
+              fontFamily: "'JetBrains Mono', monospace", fontSize: 12, lineHeight: 1.5,
+              padding: 10,
+              background: 'transparent', color: 'transparent', caretColor: '#6ee7b7',
+              border: '1px solid var(--border)', borderRadius: 6,
+              position: 'relative', zIndex: 1,
+            }}
+          />
+          {suggestions.length > 0 && (
+            <div ref={sugRef} style={{
+              position: 'absolute', top: '100%', left: 0, zIndex: 50,
+              background: '#18181b', border: '1px solid var(--border)', borderRadius: 6,
+              maxHeight: 180, overflowY: 'auto', minWidth: 200,
+              boxShadow: '0 4px 12px rgba(0,0,0,.4)',
+            }}>
+              {suggestions.map((s, i) => (
+                <div
+                  key={s}
+                  onMouseDown={e => { e.preventDefault(); applySuggestion(s) }}
+                  style={{
+                    padding: '4px 10px', fontSize: 12,
+                    fontFamily: "'JetBrains Mono', monospace",
+                    color: i === sugIdx ? 'var(--cyan)' : 'var(--text-dim)',
+                    background: i === sugIdx ? 'var(--hover-overlay)' : 'transparent',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {s}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+          <label style={{ ...btnStyle, cursor: 'pointer', padding: '8px 12px', whiteSpace: 'nowrap' }}>
+            Load File
+            <input
+              type="file"
+              accept=".sql"
+              style={{ display: 'none' }}
+              onChange={async (e) => {
+                const file = e.target.files?.[0]
+                if (!file) return
+                setSql(await file.text())
+                e.target.value = ''
+              }}
+            />
+          </label>
+          <button
+            onClick={onRun}
+            disabled={loading}
+            style={{ ...btnStyle, background: 'var(--cyan)', color: '#000', fontWeight: 700, padding: '8px 16px' }}
+          >
+            {loading ? '...' : 'Run'} <span style={{ fontSize: 10, opacity: .7 }}>Ctrl+S</span>
+          </button>
+        </div>
       </div>
-      <button onClick={onRun} disabled={loading} style={{ ...btnStyle, background: 'var(--cyan)', color: '#000', fontWeight: 700, padding: '8px 16px' }}>{loading ? '...' : 'Run'} <span style={{ fontSize: 10, opacity: .7 }}>Ctrl+S</span></button>
+
+      {error && (
+        <div style={{ padding: 12, background: 'rgba(239,68,68,.1)', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, color: 'var(--error)', fontFamily: "'JetBrains Mono', monospace", fontSize: 12, whiteSpace: 'pre-wrap' }}>
+          {error}
+        </div>
+      )}
+
+      {results && results.length > 1 && (
+        <div style={{ display: 'flex', gap: 4, borderBottom: `1px solid var(--border)`, paddingBottom: 4 }}>
+          {results.map((r, i) => (
+            <button
+              key={i}
+              onClick={() => setSelectedResultIdx(i)}
+              style={{
+                padding: '4px 12px', fontSize: 11, fontWeight: 600,
+                borderRadius: 4,
+                border: 'none',
+                background: i === selectedResultIdx ? 'var(--hover-overlay)' : 'transparent',
+                color: i === selectedResultIdx ? 'var(--cyan)' : 'var(--muted)',
+                cursor: 'pointer',
+              }}
+            >
+              Result {i + 1}
+              <span style={{ marginLeft: 6, fontWeight: 400, color: 'var(--text-dim)' }}>
+                {r.rows.length}×{r.columns.length}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {results && results.length > 0 && result && result.columns.length === 0 && result.rows.length === 0 ? (
+        <div style={{ padding: 24, textAlign: 'center', border: `1px solid var(--border)`, borderRadius: 6, color: 'var(--muted)' }}>
+          Script executed successfully.
+        </div>
+      ) : result && (
+        <div style={{ flex: 1, overflow: 'auto', border: `1px solid var(--border)`, borderRadius: 6 }}>
+          <div style={{ padding: '8px 12px', borderBottom: `1px solid var(--border)`, fontSize: 12, color: 'var(--muted)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>{result.rows.length} rows · {result.columns.length} cols</span>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button onClick={() => copyResult(result, 'tsv', showToast)} style={smallBtnStyle}>Copy TSV</button>
+              <button onClick={() => copyResult(result, 'json', showToast)} style={smallBtnStyle}>Copy JSON</button>
+              <span style={{ borderLeft: '1px solid var(--border)', margin: '0 2px' }} />
+              <button onClick={() => downloadResult(result, 'csv')} style={smallBtnStyle}>CSV</button>
+              <button onClick={() => downloadResult(result, 'json')} style={smallBtnStyle}>JSON</button>
+              <button onClick={() => downloadResult(result, 'sql')} style={smallBtnStyle}>SQL</button>
+            </div>
+          </div>
+          <table style={{ borderCollapse: 'collapse', width: 'max-content', minWidth: '100%' }}>
+            <thead>
+              <tr>
+                <th style={thStyle}>#</th>
+                {result.columns.map((col, i) => (
+                  <th key={i} style={thStyle}>{col}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {result.rows.map((row, ri) => (
+                <tr key={ri} style={{ background: ri % 2 !== 0 ? 'rgba(255,255,255,.02)' : 'transparent' }}>
+                  <td style={{ ...tdStyle, color: 'var(--muted)', fontFamily: "'JetBrains Mono', monospace", fontSize: 11 }}>
+                    {ri + 1}
+                  </td>
+                  {row.map((cell, ci) => (
+                    <td key={ci} style={{
+                      ...tdStyle,
+                      fontFamily: "'JetBrains Mono', monospace",
+                      fontSize: 12,
+                      color: cell === 'null' ? 'var(--muted)' : 'var(--text)',
+                      fontStyle: cell === 'null' ? 'italic' : 'normal',
+                    }}>
+                      {cell}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
-    {error && <div style={{ padding: 12, background: 'rgba(239,68,68,.1)', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, color: 'var(--error)', fontFamily: "'JetBrains Mono', monospace", fontSize: 12 }}>{error}</div>}
-    {result && <div style={{ flex: 1, overflow: 'auto', border: `1px solid var(--border)`, borderRadius: 6 }}><div style={{ padding: '8px 12px', borderBottom: `1px solid var(--border)`, fontSize: 12, color: 'var(--muted)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><span>{result.rows.length} rows · {result.columns.length} cols</span><div style={{ display: 'flex', gap: 6 }}><button onClick={() => copyResult(result, 'tsv', showToast)} style={smallBtnStyle}>Copy TSV</button><button onClick={() => copyResult(result, 'json', showToast)} style={smallBtnStyle}>Copy JSON</button><span style={{ borderLeft: '1px solid var(--border)', margin: '0 2px' }} /><button onClick={() => downloadResult(result, 'csv')} style={smallBtnStyle}>CSV</button><button onClick={() => downloadResult(result, 'json')} style={smallBtnStyle}>JSON</button><button onClick={() => downloadResult(result, 'sql')} style={smallBtnStyle}>SQL</button></div></div><table style={{ borderCollapse: 'collapse', width: 'max-content', minWidth: '100%' }}><thead><tr><th style={thStyle}>#</th>{result.columns.map((col, i) => <th key={i} style={thStyle}>{col}</th>)}</tr></thead><tbody>{result.rows.map((row, ri) => <tr key={ri} style={{ background: ri % 2 !== 0 ? 'rgba(255,255,255,.02)' : 'transparent' }}><td style={{ ...tdStyle, color: 'var(--muted)', fontFamily: "'JetBrains Mono', monospace", fontSize: 11 }}>{ri + 1}</td>{row.map((cell, ci) => <td key={ci} style={{ ...tdStyle, fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: cell === 'null' ? 'var(--muted)' : 'var(--text)', fontStyle: cell === 'null' ? 'italic' : 'normal' }}>{cell}</td>)}</tr>)}</tbody></table></div>}
-  </div>
+  )
 }
 
 function downloadResult(result: { columns: string[]; rows: string[][] }, format: string) {
