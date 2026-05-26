@@ -1,6 +1,0 @@
-.wrangler/
-node_modules/
-*.zip
-*-darwin-*
-*-linux-*
-*-windows-*

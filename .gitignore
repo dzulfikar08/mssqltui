@@ -3,5 +3,4 @@
 web/node_modules/
 web/dist/
 scripts/
-cloudflare-worker/node_modules/
-cloudflare-worker/.wrangler/
+cloudflare-worker/

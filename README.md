@@ -1,5 +1,9 @@
 # mssqltui
 
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
+[![GitHub release](https://img.shields.io/github/v/release/dzulfikar08/mssqltui?include_prereleases)](https://github.com/dzulfikar08/mssqltui/releases)
+
 A blazing fast TUI SQL Server (MSSQL) browser built with Rust. Browse tables, inspect schemas, run T-SQL queries with syntax highlighting and autocomplete — all from your terminal. Includes a built-in Web UI.
 
 **[Releases](https://github.com/dzulfikar08/mssqltui/releases)** | **[Contributing](CONTRIBUTING.md)**
@@ -176,3 +180,7 @@ Built with [Ratatui](https://ratatui.rs/) and [Tiberius](https://github.com/pris
 If you find mssqltui useful, consider supporting development:
 
 [Donate via Saweria](https://saweria.co/dzulfikar08)
+
+## Sponsor
+
+This project is sponsored by [Voltrus.id](https://voltrus.id) and [JoyoDigitama.com](https://joyodigitama.com).
