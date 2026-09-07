@@ -30,7 +30,7 @@ pub struct PaginationParams {
     pub limit: Option<usize>,
 }
 
-pub async fn start_server(config: ConnectionConfig, listen_port: u16) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn start_server(config: ConnectionConfig, listen_port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut app = App::default();
     match app.connect(config.clone()).await {
         Ok(()) => println!("Connected to {}:{}/{}", config.server, config.port, config.database),

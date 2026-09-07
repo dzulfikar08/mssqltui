@@ -57,7 +57,7 @@ struct CliArgs {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     color_eyre::install()?;
     let cli = CliArgs::parse();
 
@@ -113,7 +113,7 @@ async fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     ui: &mut Ui,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     loop {
         terminal.draw(|f| ui.ui(f, app))?;
         if let Event::Key(event) = event::read()? {

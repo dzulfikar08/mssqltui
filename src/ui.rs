@@ -52,7 +52,7 @@ impl Ui {
         &mut self,
         key: &KeyEvent,
         app: &mut App,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if let Some(_db) = &app.current_db {
             self.table_view.handle_input(key, app).await?;
         }

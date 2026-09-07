@@ -589,7 +589,7 @@ impl TableView {
         frame.render_stateful_widget(list, area, &mut self.copy_menu_state);
     }
 
-    fn do_copy(&mut self, index: usize, db: &Db) -> Result<(), Box<dyn std::error::Error>> {
+    fn do_copy(&mut self, index: usize, db: &Db) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let text = match index {
             0 => {
                 if let Some((row, col)) = self.table_state.selected_cell() {
@@ -1011,7 +1011,7 @@ impl TableView {
         &mut self,
         key: &KeyEvent,
         app: &mut App,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if let Some(db) = &app.current_db {
             if self.copy_menu_open {
                 match key.code {
@@ -1332,7 +1332,7 @@ impl TableView {
         self.table_state.select_cell(Some((new_row, new_col)));
     }
 
-    fn yank_cell(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn yank_cell(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if let Some((row, col)) = self.table_state.selected_cell() {
             let data_col = col.saturating_sub(1);
             if let Some(data_row) = self.data.1.get(row) {
@@ -1361,7 +1361,7 @@ impl TableView {
         0
     }
 
-    pub async fn load_table_data(&mut self, app: &App) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn load_table_data(&mut self, app: &App) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if self.selected_table_tab != SelectedTableTab::Browse {
             return Ok(());
         }
@@ -1392,7 +1392,7 @@ impl TableView {
         Ok(())
     }
 
-    async fn load_current_page(&mut self, app: &App) -> Result<(), Box<dyn std::error::Error>> {
+    async fn load_current_page(&mut self, app: &App) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if let Some(name) = &self.last_loaded_table {
             if let Some(db) = &app.current_db {
                 let table = match self.table_nav_tab {

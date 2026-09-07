@@ -63,7 +63,7 @@ pub struct QueryResult {
 }
 
 impl App {
-    pub async fn connect(&mut self, config: ConnectionConfig) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn connect(&mut self, config: ConnectionConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut client = self.build_client(&config).await?;
 
         let (mut tables, mut views) = get_tables(&mut client).await?;
@@ -90,7 +90,7 @@ impl App {
     async fn build_client(
         &self,
         config: &ConnectionConfig,
-    ) -> Result<Client<tokio_util::compat::Compat<tokio::net::TcpStream>>, Box<dyn std::error::Error>> {
+    ) -> Result<Client<tokio_util::compat::Compat<tokio::net::TcpStream>>, Box<dyn std::error::Error + Send + Sync>> {
         let mut tconfig = Config::new();
         tconfig.host(&config.server);
         tconfig.port(config.port);
@@ -116,7 +116,7 @@ impl App {
 
     async fn get_client(
         &self,
-    ) -> Result<Client<tokio_util::compat::Compat<tokio::net::TcpStream>>, Box<dyn std::error::Error>> {
+    ) -> Result<Client<tokio_util::compat::Compat<tokio::net::TcpStream>>, Box<dyn std::error::Error + Send + Sync>> {
         let config = self.config.as_ref().ok_or("Not connected")?;
         self.build_client(config).await
     }
@@ -124,7 +124,7 @@ impl App {
     pub async fn select(
         &self,
         table: &Table,
-    ) -> Result<(Vec<String>, Vec<Vec<CellType>>), Box<dyn std::error::Error>> {
+    ) -> Result<(Vec<String>, Vec<Vec<CellType>>), Box<dyn std::error::Error + Send + Sync>> {
         let mut client = self.get_client().await?;
         let quoted = format!("[{}].[{}]", table.schema, table.name);
         let sql = format!("SELECT * FROM {}", quoted);
@@ -160,7 +160,7 @@ impl App {
         table: &Table,
         offset: usize,
         limit: usize,
-    ) -> Result<(Vec<String>, Vec<Vec<CellType>>), Box<dyn std::error::Error>> {
+    ) -> Result<(Vec<String>, Vec<Vec<CellType>>), Box<dyn std::error::Error + Send + Sync>> {
         let mut client = self.get_client().await?;
         let quoted = format!("[{}].[{}]", table.schema, table.name);
         let sql = format!(
@@ -197,7 +197,7 @@ impl App {
     pub async fn execute_sql(
         &self,
         sql: &str,
-    ) -> Result<Vec<QueryResult>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<QueryResult>, Box<dyn std::error::Error + Send + Sync>> {
         let sql_trimmed = sql.trim();
         if sql_trimmed.is_empty() {
             return Ok(Vec::new());
@@ -218,7 +218,7 @@ impl App {
     pub async fn execute_multi(
         &self,
         sql: &str,
-    ) -> Vec<Result<QueryResult, Box<dyn std::error::Error>>> {
+    ) -> Vec<Result<QueryResult, Box<dyn std::error::Error + Send + Sync>>> {
         let sql_trimmed = sql.trim();
         if sql_trimmed.is_empty() {
             return Vec::new();
@@ -363,7 +363,7 @@ pub fn split_sql(sql: &str) -> Vec<(String, String)> {
 pub async fn exec_statement(
     client: &mut Client<tokio_util::compat::Compat<tokio::net::TcpStream>>,
     sql: &str,
-) -> Result<QueryResult, Box<dyn std::error::Error>> {
+) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>> {
     let sql = sql.trim();
     if sql.is_empty() {
         return Ok(QueryResult { columns: vec![], rows: vec![], rows_affected: 0 });
@@ -480,7 +480,7 @@ async fn get_columns(
 
 async fn get_tables(
     client: &mut Client<tokio_util::compat::Compat<tokio::net::TcpStream>>,
-) -> Result<(Vec<Table>, Vec<Table>), Box<dyn std::error::Error>> {
+) -> Result<(Vec<Table>, Vec<Table>), Box<dyn std::error::Error + Send + Sync>> {
     let sql = r#"
         SELECT
             t.TABLE_TYPE,
