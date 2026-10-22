@@ -218,7 +218,7 @@ impl App {
     pub async fn execute_multi(
         &self,
         sql: &str,
-    ) -> Vec<Result<QueryResult, Box<dyn std::error::Error>>> {
+    ) -> Vec<Result<QueryResult, String>> {
         let sql_trimmed = sql.trim();
         if sql_trimmed.is_empty() {
             return Vec::new();
@@ -229,11 +229,13 @@ impl App {
         }
         let mut client = match self.get_client().await {
             Ok(c) => c,
-            Err(e) => return vec![Err(e)],
+            Err(e) => return vec![Err(e.to_string())],
         };
         let mut results = Vec::new();
         for (_raw, trimmed) in &stmts {
-            let result = exec_statement(&mut client, trimmed).await;
+            let result = exec_statement(&mut client, trimmed)
+                .await
+                .map_err(|e| e.to_string());
             results.push(result);
         }
         results
