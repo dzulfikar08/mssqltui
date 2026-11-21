@@ -1,5 +1,6 @@
 use serde::Serialize;
-use tiberius::{AuthMethod, Client, Config, QueryItem, Row};
+use tiberius::time::chrono;
+use tiberius::{AuthMethod, Client, ColumnData, Config, FromSql, QueryItem, Row};
 use tokio::net::TcpStream;
 use tokio_util::compat::TokioAsyncWriteCompatExt;
 use futures_util::TryStreamExt;
@@ -399,29 +400,56 @@ pub async fn exec_statement(
     Ok(QueryResult { columns: cols, rows: data, rows_affected })
 }
 
+/// Text for one cell, by the value's SQL Server type. Every type renders (decimal and money,
+/// date and time types, uniqueidentifier, xml, tinyint, smallint...); only SQL NULL is Null.
+/// The previous chain of `try_get` guesses showed every type it didn't list as null.
 fn map_cell(row: &Row, col_index: usize) -> CellType {
-    if let Ok(Some(s)) = row.try_get::<&str, _>(col_index) {
-        return CellType::Text(s.to_string());
+    let Some((_, data)) = row.cells().nth(col_index) else {
+        return CellType::Null;
+    };
+    cell_from(data)
+}
+
+/// tiberius's own Display prints negatives as "-1.-50" and scale 0 as "12.", so format here.
+fn decimal_text(n: tiberius::numeric::Numeric) -> String {
+    let scale = n.scale() as usize;
+    let digits = n.value().unsigned_abs().to_string();
+    let sign = if n.value() < 0 { "-" } else { "" };
+    if scale == 0 {
+        return format!("{sign}{digits}");
     }
-    if let Ok(Some(v)) = row.try_get::<i32, _>(col_index) {
-        return CellType::Text(v.to_string());
+    let padded = format!("{digits:0>width$}", width = scale + 1);
+    let (int, frac) = padded.split_at(padded.len() - scale);
+    format!("{sign}{int}.{frac}")
+}
+
+fn cell_from(data: &ColumnData<'static>) -> CellType {
+    fn text<T: ToString>(v: Option<T>) -> CellType {
+        v.map_or(CellType::Null, |v| CellType::Text(v.to_string()))
     }
-    if let Ok(Some(v)) = row.try_get::<i64, _>(col_index) {
-        return CellType::Text(v.to_string());
+    fn via<'a, T: FromSql<'a> + ToString>(data: &'a ColumnData<'static>) -> CellType {
+        text(T::from_sql(data).ok().flatten())
     }
-    if let Ok(Some(v)) = row.try_get::<f64, _>(col_index) {
-        return CellType::Text(v.to_string());
+    match data {
+        ColumnData::U8(v) => text(*v),
+        ColumnData::I16(v) => text(*v),
+        ColumnData::I32(v) => text(*v),
+        ColumnData::I64(v) => text(*v),
+        ColumnData::F32(v) => text(*v),
+        ColumnData::F64(v) => text(*v),
+        ColumnData::Bit(v) => text(*v),
+        ColumnData::String(v) => text(v.as_deref()),
+        ColumnData::Guid(v) => text(*v),
+        ColumnData::Numeric(v) => text(v.map(decimal_text)),
+        ColumnData::Xml(v) => text(v.as_deref()),
+        ColumnData::Binary(v) => v.as_ref().map_or(CellType::Null, |_| CellType::Blob),
+        ColumnData::DateTime(_) | ColumnData::SmallDateTime(_) | ColumnData::DateTime2(_) => {
+            via::<chrono::NaiveDateTime>(data)
+        }
+        ColumnData::Date(_) => via::<chrono::NaiveDate>(data),
+        ColumnData::Time(_) => via::<chrono::NaiveTime>(data),
+        ColumnData::DateTimeOffset(_) => via::<chrono::DateTime<chrono::FixedOffset>>(data),
     }
-    if let Ok(Some(v)) = row.try_get::<f32, _>(col_index) {
-        return CellType::Text(v.to_string());
-    }
-    if let Ok(Some(v)) = row.try_get::<bool, _>(col_index) {
-        return CellType::Text(v.to_string());
-    }
-    if let Ok(Some(_)) = row.try_get::<&[u8], _>(col_index) {
-        return CellType::Blob;
-    }
-    CellType::Null
 }
 
 async fn count_rows(
@@ -536,5 +564,32 @@ pub fn format_size(bytes: u64) -> String {
         format!("{:.1} KB", bytes as f64 / KB as f64)
     } else {
         format!("{} B", bytes)
+    }
+}
+
+#[cfg(test)]
+mod cell_tests {
+    use super::*;
+    use std::borrow::Cow;
+    use tiberius::numeric::Numeric;
+
+    fn shown(data: ColumnData<'static>) -> String {
+        cell_from(&data).display_text().to_string()
+    }
+
+    #[test]
+    fn renders_types_that_used_to_show_null() {
+        assert_eq!(shown(ColumnData::Numeric(Some(Numeric::new_with_scale(123450, 2)))), "1234.50");
+        assert_eq!(shown(ColumnData::Numeric(Some(Numeric::new_with_scale(-150, 2)))), "-1.50");
+        assert_eq!(shown(ColumnData::Numeric(Some(Numeric::new_with_scale(-5, 1)))), "-0.5");
+        assert_eq!(shown(ColumnData::Numeric(Some(Numeric::new_with_scale(42, 0)))), "42");
+        assert_eq!(shown(ColumnData::I16(Some(-7))), "-7");
+        assert_eq!(shown(ColumnData::U8(Some(200))), "200");
+        assert_eq!(
+            shown(ColumnData::String(Some(Cow::Borrowed("hello")))),
+            "hello"
+        );
+        assert_eq!(shown(ColumnData::Numeric(None)), "null");
+        assert_eq!(shown(ColumnData::Binary(Some(Cow::Borrowed(&[1u8, 2][..])))), "[Blob]");
     }
 }
